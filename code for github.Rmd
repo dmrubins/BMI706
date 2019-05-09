@@ -1,0 +1,138 @@
+---
+title: "R Shiny Example"
+output:
+  html_document:
+    df_print: paged
+runtime: shiny
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(lubridate)
+library(reshape2)
+library(plotly)
+library(shiny)
+library(network)
+```
+
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+dir = ""
+raw=read_delim(sprintf("%s/AlertInfo.txt",dir), delim = "\t")
+d=raw %>% filter(str_detect(`BPA NAME`,"INFLUENZA NURSE")|str_detect(`BPA NAME`,"ISOLATION")|str_detect(`BPA NAME`,"CHLORHEXIDINE"))
+d$`Alert Time`=as.Date(d$`Alert Time`,format="%m/%d/%Y %H:%M")
+
+# Filters
+facilities = d$Facility %>% unique() %>% sort
+specialties = d$`Department Specialty` %>% unique() %>% sort
+provider_types = d$`Provider Type` %>% unique() %>% sort
+actions = d$`Accepted?` %>% unique() %>% sort
+
+ui <- fluidPage(
+  titlePanel("Inpatient EHR Alerts"),
+  sidebarPanel(
+    "Filters",
+    # 1.1 Add a dropdown for the list of countries that we can select
+    selectInput("facility", "Select a Facility:", facilities, multiple = TRUE),
+    selectInput("specialty", "Select a Specialty:", specialties, multiple=TRUE ),
+    selectInput("provider", "Select a Provider Type:", provider_types, multiple=TRUE ),
+    
+    sliderInput("date","Date Range",min(d$`Alert Time`),max(d$`Alert Time`), value=c(min(d$`Alert Time`),max(d$`Alert Time`)),step=1),
+    checkboxInput("accepted","Show Breakdown By Acceptance")
+    
+  ),
+  
+  mainPanel(
+    plotlyOutput("plot"),
+    plotlyOutput("network")
+  )
+);
+
+server <- function(input, output,session) {
+  dataset = reactive({
+    # Facility filter
+    if(is.null(input$facility)){filter_facilities=facilities}
+    else{filter_facilities=input$facility}
+    
+    # Specialty filter
+    if(is.null(input$specialty)){filter_specialties=specialties}
+    else{filter_specialties=input$specialty}
+    
+    # Provider type filter
+    if(is.null(input$provider)){filter_providertypes=provider_types}
+    else{filter_providertypes=input$provider}
+    
+    d %>% filter(`Provider Type` %in% filter_providertypes,
+          Facility %in% filter_facilities,  
+          `Department Specialty` %in% filter_specialties,
+          `Alert Time` >= input$date[1], `Alert Time` <= input$date[2])
+      
+  })
+  
+  output$plot <- renderPlotly({
+    if(input$accepted){
+      p = dataset() %>% group_by(`BPA NAME`, `Accepted?`) %>% summarise(Count=n())
+      p = p %>% dcast(`BPA NAME` ~ `Accepted?`) %>% arrange(desc(`TRUE`))
+      plot_ly(p,x=~`BPA NAME`,y=~`TRUE`, type = "bar", name="Accepted") %>%
+        add_trace(y=~`FALSE`,color="red",name="Not Accepted") %>% 
+        layout(barmode="group", yaxis=list(title="Count"), 
+               xaxis=list(
+                categoryorder="array",
+                categoryarray=~`BPA NAME`
+          ))
+    }else{
+      p = dataset() %>% group_by(`BPA NAME`) %>% summarise(Count=n()) %>% arrange(desc(Count))
+      plot_ly(p,x=~`BPA NAME`,y=~Count, type = "bar", color=~`BPA NAME`, colors = "Dark2")  %>%
+        layout(showlegend = FALSE, 
+               xaxis=list(
+                categoryorder="array",
+                categoryarray=~`BPA NAME`
+          ))
+    }
+  })
+  
+  output$network <- renderPlotly({
+    ed = event_data("plotly_click")
+    if(!is.null(ed$x)){
+      
+      if(input$accepted){
+        p = dataset() %>% 
+          filter(`BPA NAME`==ed$x) %>%
+          group_by(`Alert Time`, `Accepted?`) %>% 
+          summarise(Count=n())
+        
+        p = p %>% dcast(`Alert Time` ~ `Accepted?`)
+        
+        plot_ly(p,x=~`Alert Time`,y=~`TRUE`, type = "scatter", mode="line", name="Accepted") %>%
+          add_trace(y=~`FALSE`,color="red",name="Not Accepted") %>% 
+          layout(yaxis=list(title="Count"),title=ed$x)
+    
+        }else{
+        p = dataset() %>%
+          filter(`BPA NAME`==ed$x) %>%
+          group_by(`Alert Time`) %>%
+          summarise(Count=n())
+          
+        plot_ly(p, x=~`Alert Time`,y=~Count, type="scatter", mode="line") %>% layout(yaxis=list(title="Count"), title=ed$x)
+      }
+      
+    }
+    
+  })
+  
+  output$click <- renderPrint({
+    d <- event_data("plotly_click")
+
+    if (is.null(d) == T) return (NULL);
+    
+    if (is.null(d)) "Click events appear here (double-click to clear)" else d
+  })
+
+};
+
+shinyApp(ui, server, options = list(height=1200));
+```
+
+
